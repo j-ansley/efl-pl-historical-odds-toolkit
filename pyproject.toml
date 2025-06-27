@@ -1,0 +1,21 @@
+[project]
+name = "efl-pl-oddskit"
+version = "0.1.0"
+description = "CLI for Premier-League & EFL form and odds analysis"
+authors = [{name = "Jack Ansley", email = "jack.w.ansley31@gmail.com"}]
+
+dependencies = [
+    "typer",
+    "pandas",
+    "duckdb",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "rich"
+]
+
+[project.scripts]
+footy = "footy.cli:app"
+
+[tool.setuptools]
+packages = ["footy"]
