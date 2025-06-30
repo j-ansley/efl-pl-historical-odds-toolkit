@@ -1,26 +1,26 @@
 """
 footy/cli.py
 ~~~~~~~~~~~~
-Single-command CLI for EFL-PL Historical Odds Toolkit.
+Standalone CLI for my EFL-PL Historical Odds Toolkit.
 
-Run it like:
-    python -m footy.cli 2024 --leagues EPL,CH
+Example use:
+    python -m footy.cli 2024                 # pull latest EPL + EFL
+    python -m footy.cli 1998-2005 --leagues CH,L1
 """
 
 import re
 from pathlib import Path
 import typer
 
-# local helpers we wrote in fetch.py
+# helpers live in fetch.py
 from .fetch import download_csv, ingest_to_duckdb, TIER_MAP
 
-# Typer app wrapper (even though we only have one command for now)
 app = typer.Typer(help="Grab season CSVs and build a DuckDB in ./data/")
 
 # ----------------------------------------------------------------------
-# main() is the only command right now
+# main command – I don't bother with sub-commands yet
 # ----------------------------------------------------------------------
-@app.callback()  # <-- treat main() as the root command, no sub-commands needed
+@app.callback()
 def main(
     seasons: str = typer.Argument(
         ...,
@@ -32,38 +32,33 @@ def main(
     ),
 ):
     """
-    Download CSVs (one per league / season) and merge them into DuckDB.
-
-    Example calls:
-      python -m footy.cli 2024                 # latest EPL+EFL
-      python -m footy.cli 1997-2000 --leagues CH,L1
+    Pull down the CSVs I need and whack them into a single DuckDB file.
     """
     db_path = Path("data/footy.duckdb")
 
-    # ---- Parse season range "1998-2005" or single "2024" ----
-    years = re.findall(r"\d{4}", seasons)
+    # ---- Parse season range "1998-2005" (inclusive) or single "2024" ----
+    years = re.findall(r"\d{4}", seasons)  # grab all 4-digit numbers
     start, end = int(years[0]), int(years[-1])
     year_range = range(start, end + 1)
 
-    # Normalise league list
-    selected_leagues = [lg.strip().upper() for lg in leagues.split(",")]
+    # normalise league list to uppercase
+    chosen = [lg.strip().upper() for lg in leagues.split(",")]
 
-    csv_paths = []
+    csv_paths: list[Path] = []
     for yr in year_range:
-        # football-data uses "9899", "2425" format
-        season_code = f"{str(yr)[-2:]}{str(yr + 1)[-2:]}"
-        for lg in selected_leagues:
-            tier_code = TIER_MAP[lg]           # EPL -> E0, etc.
-            dest = Path("data/raw") / f"{tier_code}_{season_code}.csv"
-            # do the download (cached if file exists)
-            csv_paths.append(download_csv(season_code, tier_code, dest))
+        # football-data codes seasons like "9899", "2425"
+        code = f"{str(yr)[-2:]}{str(yr + 1)[-2:]}"
+        for lg in chosen:
+            tier = TIER_MAP[lg]                       # EPL → E0, etc.
+            dest = Path("data/raw") / f"{tier}_{code}.csv"
+            csv_paths.append(download_csv(code, tier, dest))
 
-    # slap everything into DuckDB
+    # smash everything into DuckDB
     ingest_to_duckdb(csv_paths, db_path)
 
 
 # ----------------------------------------------------------------------
-# Make the module runnable:  python -m footy.cli ...
+# allows: python -m footy.cli ...
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
     typer.run(main)
