@@ -47,7 +47,7 @@ def main(
     csv_paths: list[Path] = []
     for yr in year_range:
         # football-data codes seasons like "9899", "2425"
-        code = f"{str(yr)[-2:]}{str(yr + 1)[-2:]}"
+        code = f"{str(yr-1)[-2:]}{str(yr)[-2:]}"
         for lg in chosen:
             tier = TIER_MAP[lg]                       # EPL → E0, etc.
             dest = Path("data/raw") / f"{tier}_{code}.csv"

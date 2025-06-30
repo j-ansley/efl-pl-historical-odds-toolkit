@@ -28,7 +28,15 @@ def download_csv(season_code: str, tier_code: str, dest: Path) -> Path:
 
 def ingest_to_duckdb(csv_paths: list[Path], db_path: Path):
     """Concatenate CSVs → DuckDB table `results`."""
-    frames = [pd.read_csv(p) for p in csv_paths]
+    frames = [
+        pd.read_csv(
+            p,
+            encoding="latin1",
+            on_bad_lines="skip",
+            engine="python",
+        )
+        for p in csv_paths
+    ]
     big = pd.concat(frames, ignore_index=True)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     duckdb.connect(db_path).execute(
