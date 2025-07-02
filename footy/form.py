@@ -1,101 +1,117 @@
 """
 footy/form.py
 -------------
-Rolling N-match form table pulled from my DuckDB.
+rolling n-match form table pulled from duckdb
 
-Examples
+examples
 --------
-python -m footy.form 2024 --top 10 --window 5
-python -m footy.form 2005 --top 10 --window 5
+python -m footy.form 2024 --top 12                    #epl, 5-match window
+python -m footy.form 2024 --window 10 --leagues l2    #league two, 10-match
+python -m footy.form 2005 --leagues ch,l1             #retro champ + l1
 """
 
 from pathlib import Path
+from typing import List, Tuple
+
 import duckdb
 import pandas as pd
-import warnings
 import typer
-from rich.table import Table
 from rich import print as rprint
+from rich.table import Table
+import warnings
 
-# Quiet the “Could not infer format” chatter from pandas once and for all.
+#silence pandas “could not infer format” chatter
 warnings.filterwarnings(
     "ignore",
     message="Could not infer format, so each element will be parsed individually",
     category=UserWarning,
 )
 
-app = typer.Typer()
+app = typer.Typer(help="show rolling-form tables")
 
+#map nicer league codes to football-data div codes
+DIV_CODE = {"EPL": "E0", "CH": "E1", "L1": "E2", "L2": "E3"}
 
-def load_matches(db: Path) -> pd.DataFrame:
-    """Grab raw results into a DataFrame."""
+#------------------------------------------------------------------
+#helpers
+#------------------------------------------------------------------
+def season_dataframe(db: Path, league: str, season_end: int) -> pd.DataFrame:
+    #return tidy df -> match_date | club | pts for chosen league+season
+    season_start = f"{season_end-1}-07-01"
+    season_finish = f"{season_end}-06-30"
+
     con = duckdb.connect(db, read_only=True)
-    return con.execute(
-        "SELECT Date, HomeTeam, AwayTeam, FTR FROM results"
+    raw = con.execute(
+        """
+        select distinct
+               Date,        --keep original case so pandas cols are 'Date'
+               HomeTeam,
+               AwayTeam,
+               FTR
+        from   results
+        where  Div = ?
+        """,
+        [DIV_CODE[league]],
     ).fetchdf()
 
+    #parse date (pandas deals with dd/mm/yy and dd/mm/yyyy)
+    raw["match_date"] = pd.to_datetime(
+        raw["Date"].str.strip(), dayfirst=True, errors="coerce"
+    )
 
-def prepare_season(df: pd.DataFrame, season_end: int) -> pd.DataFrame:
-    """Filter rows to a single season window and melt to (match_date, club, pts)."""
-    start = f"{season_end - 1}-07-01"
-    end = f"{season_end}-06-30"
+    #put each match into two rows with points already attached
+    pts_map = {"H": (3, 0), "D": (1, 1), "A": (0, 3)}
+    rows: List[Tuple] = []
+    for _, row in raw.iterrows():
+        home_pts, away_pts = pts_map[row["FTR"]]
+        rows.append((row["match_date"], row["HomeTeam"], home_pts))
+        rows.append((row["match_date"], row["AwayTeam"], away_pts))
 
-    # pandas happily parses both DD/MM/YY and DD/MM/YYYY when dayfirst=True
-    dates = pd.to_datetime(df["Date"].str.strip(), dayfirst=True, errors="coerce")
-
-    # keep only matches in that Jul-to-Jun window
-    mask = dates.between(start, end)
-    df = df.loc[mask].copy()
-    df["match_date"] = dates.loc[mask]
-
-    # explode each match into two club rows (home + away)
-    home = df.rename(columns={"HomeTeam": "club"}).assign(
-        pts=lambda x: x["FTR"].map({"H": 3, "D": 1, "A": 0})
-    )[["match_date", "club", "pts"]]
-
-    away = df.rename(columns={"AwayTeam": "club"}).assign(
-        pts=lambda x: x["FTR"].map({"A": 3, "D": 1, "H": 0})
-    )[["match_date", "club", "pts"]]
-
-    return pd.concat([home, away], ignore_index=True)
+    tidy_df = pd.DataFrame(rows, columns=["match_date", "club", "pts"])
+    mask = tidy_df["match_date"].between(season_start, season_finish)
+    tidy = (
+        tidy_df.loc[mask]
+        .sort_values("match_date")
+        .reset_index(drop=True)
+    )
+    return tidy
 
 
-def rolling_form(df: pd.DataFrame, window: int, top: int):
-    """Return top clubs by rolling window points."""
-    df = df.sort_values("match_date")
-    roll = (
-        df.groupby("club")["pts"]
-        .rolling(window, min_periods=window)
+def rolling_form(tidy: pd.DataFrame, window: int, table_size: int) -> pd.DataFrame:
+    #take last n rows per club then sum pts
+    last_chunk = tidy.groupby("club").tail(window)
+    sums = (
+        last_chunk.groupby("club")["pts"]
         .sum()
-        .reset_index()
-    )
-    latest = (
-        roll.groupby("club")["pts"].last()
         .sort_values(ascending=False)
-        .head(top)
+        .head(table_size)
     )
-    return latest.items()
+    return sums.reset_index()
 
 
-@app.callback()
-def main(
-    season: int = typer.Argument(..., help="Season end year, e.g. 2005 or 2024"),
-    top: int = typer.Option(10, help="Rows to show"),
-    window: int = typer.Option(5, help="Rolling-match window"),
-):
-    df_all = load_matches(Path("data/footy.duckdb"))
-    df_season = prepare_season(df_all, season)
-    rows = rolling_form(df_season, window, top)
-
-    # pretty print
-    table = Table(title=f"Top {top} form — {season} (last {window} matches)")
-    table.add_column("Pos")
-    table.add_column("Club")
-    table.add_column("Pts")
-    for i, (club, pts) in enumerate(rows, 1):
-        table.add_row(str(i), club, str(int(pts)))
+def print_table(title: str, rows: pd.DataFrame) -> None:
+    table = Table(title=title)
+    table.add_column("pos", justify="right")
+    table.add_column("club")
+    table.add_column("pts", justify="right")
+    for idx, (club, pts) in enumerate(rows.itertuples(index=False), start=1):
+        table.add_row(str(idx), club, str(int(pts)))
     rprint(table)
+
+@app.command()
+def main(
+    season: int = typer.Argument(..., help="season end year, e.g. 2024"),
+    top: int = typer.Option(10, help="rows to show"),
+    window: int = typer.Option(5, help="rolling-match window"),
+    leagues: str = typer.Option("EPL", help="comma list epl,ch,l1,l2"),
+):
+    db = Path("data/footy.duckdb")
+
+    for lg in [code.strip().upper() for code in leagues.split(",")]:
+        tidy = season_dataframe(db, lg, season)
+        rows = rolling_form(tidy, window, top)
+        print_table(f"{lg} form — {season} (last {window})", rows)
 
 
 if __name__ == "__main__":
-    typer.run(main)
+    app()
